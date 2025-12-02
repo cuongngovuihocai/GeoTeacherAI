@@ -1,10 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Header } from './components/Header';
 import { DrawingCanvas } from './components/DrawingCanvas';
 import { ExamplePrompts } from './components/ExamplePrompts';
 import { generateGeometrySvg } from './services/geminiService';
 import { HistoryItem, DrawingOptions } from './types';
-import { Sparkles, Clock, Trash2, ChevronRight, Palette, Ruler, PenLine, Info } from 'lucide-react';
+import { Sparkles, Clock, Trash2, ChevronRight, Palette, Ruler, PenLine, Info, Key, Check } from 'lucide-react';
 
 // Helper function to get hex color
 const getColorCode = (color: string) => {
@@ -19,6 +19,8 @@ const getColorCode = (color: string) => {
 };
 
 const App: React.FC = () => {
+  const [apiKey, setApiKey] = useState('');
+  const [isEditingKey, setIsEditingKey] = useState(true); // Control visibility of API input
   const [prompt, setPrompt] = useState('');
   const [annotations, setAnnotations] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -30,8 +32,28 @@ const App: React.FC = () => {
   const [strokeColor, setStrokeColor] = useState('black');
   const [strokeWidth, setStrokeWidth] = useState('medium');
 
+  // Load API Key from local storage on mount
+  useEffect(() => {
+    const storedKey = localStorage.getItem('gemini_api_key');
+    if (storedKey) {
+      setApiKey(storedKey);
+      setIsEditingKey(false); // Hide input if key exists
+    }
+  }, []);
+
+  const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value;
+    setApiKey(newValue);
+    localStorage.setItem('gemini_api_key', newValue);
+  };
+
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
+    if (!apiKey && !process.env.API_KEY) {
+        setError("Vui lòng nhập Gemini API Key để tiếp tục.");
+        setIsEditingKey(true); // Open input if missing
+        return;
+    }
 
     setIsLoading(true);
     setError(null);
@@ -43,7 +65,7 @@ const App: React.FC = () => {
     };
 
     try {
-      const svg = await generateGeometrySvg(prompt, options);
+      const svg = await generateGeometrySvg(prompt, options, apiKey);
       setCurrentSvg(svg);
       
       const newItem: HistoryItem = {
@@ -93,6 +115,58 @@ const App: React.FC = () => {
             
             {/* Input Card */}
             <div className="bg-white dark:bg-slate-900 rounded-2xl p-5 shadow-lg shadow-slate-200/50 dark:shadow-black/20 border border-slate-100 dark:border-slate-800 transition-colors">
+              
+              {/* API Key Input */}
+              <div className="mb-5 pb-5 border-b border-slate-100 dark:border-slate-800">
+                 <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                        <Key size={16} className={apiKey ? "text-green-500" : "text-indigo-500"} />
+                        <label className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+                            {apiKey && !isEditingKey ? 'API Key đã lưu' : 'Gemini API Key'}
+                        </label>
+                    </div>
+                    {apiKey && !isEditingKey && (
+                        <button 
+                            onClick={() => setIsEditingKey(true)}
+                            className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline hover:text-indigo-700 transition-colors"
+                        >
+                            Thay đổi
+                        </button>
+                    )}
+                 </div>
+
+                 {(!apiKey || isEditingKey) ? (
+                     <div className="animate-in fade-in slide-in-from-top-2 duration-200">
+                         <div className="relative">
+                             <input
+                                type="password"
+                                value={apiKey}
+                                onChange={handleApiKeyChange}
+                                placeholder="Dán API Key của bạn vào đây..."
+                                className="w-full pl-3 pr-16 py-2 text-sm text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600"
+                             />
+                             {apiKey && (
+                                 <button 
+                                    onClick={() => setIsEditingKey(false)}
+                                    className="absolute right-1 top-1 bottom-1 px-2 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 text-xs font-medium rounded hover:bg-indigo-200 dark:hover:bg-indigo-800 transition-colors flex items-center gap-1"
+                                 >
+                                     <Check size={12} />
+                                     <span>Xong</span>
+                                 </button>
+                             )}
+                         </div>
+                         <p className="mt-2 text-[10px] text-slate-400">
+                            Chưa có key? <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline">Lấy tại đây</a>.
+                         </p>
+                     </div>
+                 ) : (
+                     <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-slate-800">
+                        <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                        <span className="font-medium">Sẵn sàng sử dụng</span>
+                     </div>
+                 )}
+              </div>
+
               <div className="flex items-center gap-2 mb-3">
                  <div className="p-1.5 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg text-indigo-600 dark:text-indigo-400">
                     <PenLine size={18} />
@@ -162,7 +236,7 @@ const App: React.FC = () => {
 
               <button
                 onClick={handleGenerate}
-                disabled={isLoading || !prompt.trim()}
+                disabled={isLoading || !prompt.trim() || (!apiKey && !process.env.API_KEY)}
                 className="group relative w-full flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-300 disabled:to-slate-400 text-white px-5 py-3 rounded-xl font-semibold transition-all shadow-lg shadow-indigo-500/30 active:scale-[0.98] disabled:shadow-none disabled:cursor-not-allowed"
               >
                 {isLoading ? (

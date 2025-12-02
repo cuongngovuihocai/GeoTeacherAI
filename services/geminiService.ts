@@ -1,14 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { DrawingOptions } from "../types";
 
-const apiKey = process.env.API_KEY;
-
-if (!apiKey) {
-  console.error("API_KEY is missing from environment variables.");
-}
-
-const ai = new GoogleGenAI({ apiKey: apiKey || '' });
-
 const SYSTEM_INSTRUCTION = `
 Bạn là một trợ lý chuyên nghiệp hỗ trợ giáo viên toán học vẽ hình minh họa cho bài giảng (Geometry Visualizer).
 Nhiệm vụ: Chuyển đổi mô tả văn bản thành mã SVG (Scalable Vector Graphics) chính xác về toán học và thẩm mỹ.
@@ -48,10 +40,16 @@ Input: "Vẽ hình chóp tam giác đều S.ABC"
 Logic: Đáy ABC thường vẽ là tam giác lệch. Cạnh đáy phía trên (AC) thường là nét đứt. Hai cạnh đáy dưới (AB, BC) nét liền. SA, SB, SC nét liền. (Tùy góc nhìn, nhưng phải đảm bảo logic hình học).
 `;
 
-export const generateGeometrySvg = async (prompt: string, options?: DrawingOptions): Promise<string> => {
-  if (!apiKey) {
-    throw new Error("Vui lòng cấu hình API Key để sử dụng tính năng này.");
+export const generateGeometrySvg = async (prompt: string, options?: DrawingOptions, userApiKey?: string): Promise<string> => {
+  // Ưu tiên key người dùng nhập, sau đó mới đến biến môi trường
+  const effectiveApiKey = userApiKey || process.env.API_KEY;
+
+  if (!effectiveApiKey) {
+    throw new Error("Vui lòng nhập Gemini API Key để sử dụng tính năng này.");
   }
+
+  // Khởi tạo client mới với key cụ thể
+  const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
 
   let fullPrompt = prompt;
 
