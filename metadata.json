@@ -1,0 +1,5 @@
+{
+  "name": "GeoTeacher AI",
+  "description": "Ứng dụng hỗ trợ giáo viên toán tạo hình học 2D và 3D bằng mô tả văn bản sử dụng Gemini AI.",
+  "requestFramePermissions": []
+}
