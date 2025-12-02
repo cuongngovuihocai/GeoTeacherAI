@@ -9,35 +9,37 @@ QUY TẮC CỐT LÕI:
 1. ĐẦU RA: Chỉ trả về mã SVG. KHÔNG markdown, KHÔNG giải thích. Bắt đầu <svg... kết thúc </svg>.
 2. VIEWBOX: Sử dụng viewBox="0 0 500 500". Padding an toàn 40px.
 
-QUY TẮC NÉT VẼ 3D (QUAN TRỌNG NHẤT - PHẢI TUÂN THỦ):
-Hãy tưởng tượng hình không gian trong hệ toạ độ hoặc hình chiếu trục đo thông dụng trong sách giáo khoa Toán:
-1. ĐƯỜNG BAO (Silhouette): Tất cả các cạnh tạo nên viền ngoài cùng của hình chiếu 2D LUÔN LÀ NÉT LIỀN (Solid).
-2. CẠNH KHUẤT (Hidden Lines):
-   - Các cạnh đáy nằm phía "sau" hoặc bị mặt phẳng khác che khuất => NÉT ĐỨT (stroke-dasharray="4 4").
-   - Các cạnh bên nối từ đỉnh xuống một đỉnh đáy bị khuất => NÉT ĐỨT.
-   - Đường cao (kẻ từ đỉnh xuống tâm đáy) => NÉT ĐỨT (hoặc nét chấm gạch nếu là trục).
-3. CẠNH THẤY (Visible Lines): Các cạnh còn lại nằm ở mặt trước => NÉT LIỀN.
+QUY TẮC PHÂN BIỆT 2D VÀ 3D (QUAN TRỌNG):
+1. HÌNH HỌC PHẲNG (2D):
+   - Hầu hết là NÉT LIỀN (Solid).
+   - Chỉ dùng NÉT ĐỨT (Dashed) cho: Đường gióng (projection lines), đường phân giác trong tưởng tượng, hoặc đường bị hình khác đè lên hoàn toàn.
+   - Ví dụ: Tam giác, Hình tròn, Hình thang => Toàn bộ nét liền.
 
-VÍ DỤ CỤ THỂ:
-- Hình chóp tứ giác đều S.ABCD (đáy ABCD là hình bình hành trên giấy):
-  + Đáy: AB (liền), BC (liền), CD (đứt), DA (đứt).
-  + Cạnh bên: SA (liền), SB (liền), SC (liền), SD (đứt - vì D là đỉnh khuất).
-  + Đường cao SO: Đứt.
-- Hình lập phương/Hộp chữ nhật:
-  + Vẽ dạng hình chiếu trục đo. 3 cạnh xuất phát từ góc khuất bên trong => NÉT ĐỨT. 9 cạnh còn lại => NÉT LIỀN.
+2. HÌNH HỌC KHÔNG GIAN (3D):
+   - Phải tư duy theo LỚP (LAYERS) từ trên xuống dưới, từ ngoài vào trong.
+   - ĐƯỜNG BAO NGOÀI (Silhouette): Luôn là NÉT LIỀN.
+   - CÁC MẶT THẤY (Visible Faces): Các đường nằm trên mặt phẳng hướng về phía người nhìn => NÉT LIỀN.
+   - CÁC MẶT KHUẤT (Hidden Faces): Các đường nằm ở mặt sau, bị các mặt trước che lấp => NÉT ĐỨT (stroke-dasharray="4 4").
+   - ĐƯỜNG TRỤC/CAO: Đường cao kẻ từ đỉnh xuống tâm đáy thường là NÉT ĐỨT (hoặc chấm gạch).
+
+VÍ CỤ THỂ CHO 3D:
+- Hình chóp S.ABCD:
+  + Đường bao (SA, SB, BC, CD, SD - tuỳ góc nhìn): Nét liền.
+  + Nếu góc nhìn từ trên xuống lệch trái: Cạnh đáy AD và DC (phía sau) là Nét đứt. Cạnh bên SD (nối với đỉnh khuất D) là Nét đứt.
+- Hình trụ:
+  + Hai cạnh bên dọc: Nét liền.
+  + Đáy trên: Ellipse liền.
+  + Đáy dưới: Nửa cung trước liền, nửa cung sau ĐỨT.
 
 QUY TẮC KỸ THUẬT:
 - Nét liền: stroke-dasharray="none" (hoặc không set).
 - Nét đứt: stroke-dasharray="4 4".
 - Màu sắc/Độ dày: Theo yêu cầu người dùng (default: black, width: 2).
-- Văn bản (Labels): Đặt tên đỉnh (A, B, C...) dùng thẻ <text>, font sans-serif, size 16-20px. Đặt vị trí hợp lý để không bị nét vẽ cắt qua.
+- Văn bản (Labels): Đặt tên đỉnh (A, B, C...) dùng thẻ <text>, font sans-serif, size 16-20px, text-anchor="middle". Tránh đặt đè lên nét vẽ.
 
 GHI CHÚ SỐ ĐO:
-- Độ dài cạnh: Đặt text số đo (ví dụ "5cm") song song và gần trung điểm cạnh. KHÔNG vẽ đường gióng/mũi tên trừ khi được yêu cầu rõ.
+- Độ dài cạnh: Đặt text số đo (ví dụ "5cm") song song và gần trung điểm cạnh. 
 - Góc: Vẽ cung tròn nhỏ (path arc) + text số đo.
-
-Input: "Vẽ hình chóp tam giác đều S.ABC"
-Logic: Đáy ABC thường vẽ là tam giác lệch. Cạnh đáy phía trên (AC) thường là nét đứt. Hai cạnh đáy dưới (AB, BC) nét liền. SA, SB, SC nét liền. (Tùy góc nhìn, nhưng phải đảm bảo logic hình học).
 `;
 
 export const generateGeometrySvg = async (prompt: string, options?: DrawingOptions, userApiKey?: string): Promise<string> => {
@@ -77,7 +79,7 @@ export const generateGeometrySvg = async (prompt: string, options?: DrawingOptio
         fullPrompt += `\n- Ghi chú/Số đo cần thêm: ${options.annotations}`;
     }
 
-    fullPrompt += `\n\nLƯU Ý ĐẶC BIỆT: Hãy phân tích kỹ hình học 3D để xác định đúng NÉT ĐỨT (cạnh khuất) và NÉT LIỀN (cạnh thấy). Đừng vẽ toàn bộ là nét liền.`;
+    fullPrompt += `\n\nLƯU Ý CUỐI: Hãy cố gắng phân biệt nét đứt/liền tốt nhất có thể. Người dùng có công cụ để sửa lại thủ công nếu sai, nhưng hãy làm tốt nhất từ đầu.`;
   }
 
   try {

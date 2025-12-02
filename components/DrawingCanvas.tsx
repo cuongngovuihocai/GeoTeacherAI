@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Download, ZoomIn, ZoomOut, Move, MousePointer2, Minus, Square, Circle, Type, Trash2, RefreshCw, Undo, Redo, LayoutGrid, RotateCw } from 'lucide-react';
+import { Download, ZoomIn, ZoomOut, Move, MousePointer2, Minus, Square, Circle, Type, Trash2, RefreshCw, Undo, Redo, LayoutGrid, RotateCw, MoreHorizontal } from 'lucide-react';
 
 interface DrawingCanvasProps {
   svgContent: string | null;
@@ -448,12 +448,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
         
         // Case A: Dragging a Vertex Handle
         if (target.classList.contains('control-handle')) {
-            // Find which index
-            // We store index in a data attribute or infer from DOM order? 
-            // In rendering, we attach onMouseDown with index.
-            // But here we are using global listener.
-            // Let's rely on the onMouseDown attached to the handle div in JSX for index setting
-            // So we just set mode here if index is already set
             dragModeRef.current = 'vertex';
             return;
         }
@@ -515,11 +509,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
               tx: newTx,
               ty: newTy
           });
-          // Note: we don't update BBox during drag to avoid flicker/complex calc, or we just rely on visual offset
-          // But control points need to move visually. Since they are rendered based on attributes, and we only changed transform,
-          // the control points (if rendered absolutely) need to be transformed too.
-          // FIX: The current rendering logic puts control handles in a div on top. 
-          // We need to apply the SAME transform to the control handles container or individual handles.
       }
 
       // Mode: Rotate
@@ -532,10 +521,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
            const cx = bbox.cx; 
            const cy = bbox.cy;
 
-           // Angle calculation
-           // Angle = atan2(dy, dx)
-           // Initial angle from center to mouse start
-           // Current angle from center to mouse current
            const startAngle = Math.atan2(startPointRef.current.y - cy, startPointRef.current.x - cx);
            const currentAngle = Math.atan2(pt.y - cy, pt.x - cx);
            
@@ -666,6 +651,26 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       }
   };
 
+  const handleToggleDash = () => {
+      if (selectedElement) {
+          const currentDash = selectedElement.getAttribute('stroke-dasharray');
+          // If it has dash, remove it (make solid). If not, add dash (4 4).
+          if (currentDash && currentDash !== 'none') {
+              selectedElement.setAttribute('stroke-dasharray', 'none');
+          } else {
+              selectedElement.setAttribute('stroke-dasharray', '4 4');
+          }
+          addToHistory();
+      }
+  };
+
+  const handleChangeStrokeWidth = (width: string) => {
+    if (selectedElement) {
+        selectedElement.setAttribute('stroke-width', width);
+        addToHistory();
+    }
+  };
+
   const handleDownload = () => {
     const svg = mountRef.current?.querySelector('svg');
     if (!svg) return;
@@ -689,14 +694,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   const handleZoomOut = () => setScale(prev => Math.max(prev - 0.2, 0.5));
   const handleResetZoom = () => setScale(1);
 
-  // Helper to render current transform on the overlay UI
-  // The overlay needs to match the selected element's transform so handles align with the shape
   const getSelectedElementStyle = () => {
       if (!selectedElement) return {};
       const t = getElementTransform(selectedElement);
-      // Construct CSS transform that mirrors SVG transform
-      // Origin is tricky because SVG rotate uses (cx, cy) while CSS uses transform-origin
-      // Simpler: Apply exact same SVG transform logic to the overlay wrapper
       return {
           transform: `translate(${t.tx}px, ${t.ty}px) rotate(${t.rotation}deg)`,
           transformOrigin: `${t.cx}px ${t.cy}px`
@@ -782,12 +782,51 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
 
         <div className="flex items-center gap-2">
             {selectedElement && (
+                <>
+                <button
+                    onClick={handleToggleDash}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors border border-slate-200 dark:border-slate-700"
+                    title="Đổi nét liền/đứt"
+                >
+                   <MoreHorizontal size={16} />
+                </button>
+                
+                <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-1"></div>
+                
+                <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700">
+                   <button 
+                     onClick={() => handleChangeStrokeWidth('1')} 
+                     className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all"
+                     title="Nét mỏng"
+                   >
+                     <Minus size={16} strokeWidth={1} />
+                   </button>
+                   <button 
+                     onClick={() => handleChangeStrokeWidth('2')} 
+                     className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all"
+                     title="Nét vừa"
+                   >
+                     <Minus size={16} strokeWidth={2} />
+                   </button>
+                   <button 
+                     onClick={() => handleChangeStrokeWidth('4')} 
+                     className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all"
+                     title="Nét dày"
+                   >
+                     <Minus size={16} strokeWidth={4} />
+                   </button>
+                </div>
+
+                <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-1"></div>
+
                 <button 
                   onClick={handleDelete}
                   className="flex items-center gap-1 px-3 py-1.5 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm font-medium rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors border border-red-100 dark:border-red-900/50"
+                  title="Xóa đối tượng"
                 >
                   <Trash2 size={16} />
                 </button>
+                </>
             )}
             <button 
               onClick={handleDownload}
@@ -905,7 +944,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       
       <div className="bg-white dark:bg-slate-900 px-4 py-2 text-xs text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800 flex justify-between font-medium">
         <span>Chế độ: <span className="text-indigo-600 dark:text-indigo-400">{tool === 'select' ? (selectedElement ? 'Di chuyển & Xoay' : 'Chọn đối tượng') : 'Vẽ hình'}</span></span>
-        <span>{selectedElement ? 'Kéo hình để di chuyển, kéo nút trên để xoay' : 'Click vào hình để sửa'}</span>
+        <span>{selectedElement ? 'Kéo hình để di chuyển, nút ••• để đổi nét' : 'Click vào hình để sửa'}</span>
       </div>
     </div>
   );
