@@ -653,12 +653,21 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
 
   const handleToggleDash = () => {
       if (selectedElement) {
-          const currentDash = selectedElement.getAttribute('stroke-dasharray');
-          // If it has dash, remove it (make solid). If not, add dash (4 4).
-          if (currentDash && currentDash !== 'none') {
-              selectedElement.setAttribute('stroke-dasharray', 'none');
+          const svgEl = selectedElement as SVGElement;
+          const attrDash = svgEl.getAttribute('stroke-dasharray');
+          const styleDash = svgEl.style.strokeDasharray;
+
+          // Check if either attribute or style indicates a dashed line
+          const isDashed = (attrDash && attrDash !== 'none') || (styleDash && styleDash !== 'none');
+
+          if (isDashed) {
+              // Make Solid: Remove attribute AND clear style property
+              svgEl.removeAttribute('stroke-dasharray');
+              svgEl.style.strokeDasharray = '';
+              svgEl.style.removeProperty('stroke-dasharray');
           } else {
-              selectedElement.setAttribute('stroke-dasharray', '4 4');
+              // Make Dashed
+              svgEl.setAttribute('stroke-dasharray', '4 4');
           }
           addToHistory();
       }
