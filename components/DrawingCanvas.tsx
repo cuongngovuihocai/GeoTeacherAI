@@ -102,10 +102,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       return;
     }
     try {
+      // Use getBBox() which returns coordinates in the element's local system (untouched by transform)
+      // This is exactly what we want for drawing handles relative to the transformed element
       const bbox = el.getBBox();
-      // Adjust bbox based on current transform (only for center calculation logic, visual bbox uses local coords)
-      // Actually, SVG getBBox returns box in user coordinate system (pre-transform)
-      // We will render the selection box inside the same transform group or apply same transform to it
       setSelectionBBox({
         x: bbox.x,
         y: bbox.y,
@@ -237,13 +236,29 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
     return { x: 0, y: 0 };
   };
 
+  // Get point relative to a specific element's coordinate system (accounting for transforms)
+  const getLocalPoint = (clientX: number, clientY: number, el: SVGGraphicsElement) => {
+    const svg = mountRef.current?.querySelector('svg') as SVGSVGElement;
+    if (!svg) return { x: 0, y: 0 };
+
+    const point = svg.createSVGPoint();
+    point.x = clientX;
+    point.y = clientY;
+    
+    // This is the key fix: use the element's screen CTM
+    // ensuring we get coordinates in the element's local space
+    // regardless of rotation, translation or scaling.
+    const ctm = el.getScreenCTM(); 
+    if (ctm) {
+      return point.matrixTransform(ctm.inverse());
+    }
+    return getSVGPoint(clientX, clientY); // Fallback
+  };
+
   const parseControlPoints = (el: Element): ControlPoint[] => {
     const points: ControlPoint[] = [];
     const tagName = el.tagName.toLowerCase();
 
-    // If element is transformed, simple vertex editing might be visually misaligned 
-    // unless we counter-transform mouse. For now, we allow it but it might be quirky if rotated.
-    
     if (tagName === 'line') {
       points.push({ x: parseFloat(el.getAttribute('x1') || '0'), y: parseFloat(el.getAttribute('y1') || '0'), id: 0, type: 'vertex' });
       points.push({ x: parseFloat(el.getAttribute('x2') || '0'), y: parseFloat(el.getAttribute('y2') || '0'), id: 1, type: 'vertex' });
@@ -286,10 +301,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   };
 
   const updateElementShape = (el: Element, pointIndex: number, newX: number, newY: number) => {
-    // Note: This updates LOCAL coordinates. If transform exists, it applies on top.
-    // Ideally we should inverse transform newX/newY into local space, but that requires matrix math.
-    // For simple translation (move), this is fine. For rotation, vertex editing might drift.
-    
     const tagName = el.tagName.toLowerCase();
     didChangeRef.current = true;
 
@@ -315,6 +326,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
         const h = parseFloat(el.getAttribute('height') || '0');
         
         if (pointIndex === 0) { 
+            // Dragging Top-Left
             const newW = (x + w) - newX;
             const newH = (y + h) - newY;
             if (newW > 0 && newH > 0) {
@@ -324,6 +336,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                 el.setAttribute('height', String(newH));
             }
         } else {
+            // Dragging Bottom-Right
             const newW = newX - x;
             const newH = newY - y;
             if (newW > 0 && newH > 0) {
@@ -368,7 +381,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   const handleMouseDown = useCallback((e: MouseEvent) => {
     const pt = getSVGPoint(e.clientX, e.clientY);
     const tool = toolRef.current;
-    const target = e.target as Element;
+    const target = e.target as Element; // cast to Element for classList/dataset
 
     // 1. Tool Logic: Drawing New Shapes
     if (tool !== 'select') {
@@ -446,10 +459,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
         startPointRef.current = pt;
         didChangeRef.current = false;
         
-        // Case A: Dragging a Vertex Handle
+        // Case A: Dragging a Vertex Handle (Using delegation via class checking)
         if (target.classList.contains('control-handle')) {
-            dragModeRef.current = 'vertex';
-            return;
+            const indexStr = target.getAttribute('data-index');
+            if (indexStr !== null) {
+                dragModeRef.current = 'vertex';
+                isDraggingPointRef.current = parseInt(indexStr, 10);
+                e.stopPropagation();
+                return;
+            }
         }
 
         // Case B: Dragging Rotate Handle
@@ -458,21 +476,25 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
             if (selectedElementRef.current) {
                 startTransformRef.current = getElementTransform(selectedElementRef.current);
             }
+            e.stopPropagation();
             return;
         }
 
         // Case C: Clicking on the SVG Element (Move) or Selecting new
         const svg = mountRef.current?.querySelector('svg');
-        if (svg && target !== svg && target !== mountRef.current && svg.contains(target)) {
+        // Handle click on element inside SVG
+        const closestSVGElement = target.closest('svg > *'); // Find direct child of SVG
+        
+        if (svg && svg.contains(target) && closestSVGElement && closestSVGElement !== svg && !target.classList.contains('overlay-ui')) {
             // Select the element
-            setSelectedElement(target);
-            setControlPoints(parseControlPoints(target));
-            updateSelectionBBox(target);
+            setSelectedElement(closestSVGElement);
+            setControlPoints(parseControlPoints(closestSVGElement));
+            updateSelectionBBox(closestSVGElement);
             
             // Set Move Mode
             dragModeRef.current = 'move';
-            startTransformRef.current = getElementTransform(target);
-        } else {
+            startTransformRef.current = getElementTransform(closestSVGElement);
+        } else if (target === svg || target === mountRef.current || target.classList.contains('overlay-container')) {
             // Clicked empty space
             setSelectedElement(null);
             setControlPoints([]);
@@ -484,11 +506,16 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   }, [addToHistory, updateSelectionBBox]);
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
+      // General SVG Point
       const pt = getSVGPoint(e.clientX, e.clientY);
 
       // Mode: Vertex Edit
       if (dragModeRef.current === 'vertex' && isDraggingPointRef.current !== null && selectedElementRef.current) {
-          updateElementShape(selectedElementRef.current, isDraggingPointRef.current, pt.x, pt.y);
+          // KEY FIX: Use getLocalPoint to handle element transforms (move/rotate)
+          // This maps the mouse cursor back to the element's original coordinate space
+          const localPt = getLocalPoint(e.clientX, e.clientY, selectedElementRef.current as SVGGraphicsElement);
+          
+          updateElementShape(selectedElementRef.current, isDraggingPointRef.current, localPt.x, localPt.y);
           setControlPoints(parseControlPoints(selectedElementRef.current));
           updateSelectionBBox(selectedElementRef.current);
           return;
@@ -517,22 +544,63 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
            const bbox = selectionBBox;
            if (!bbox) return;
 
-           // Center of rotation (bbox center)
+           // Center of rotation (bbox center) is in local coordinates, we need to map mouse to the same space approximately? 
+           // Or just use screen vector math. Using SVG coords is simpler for relative angles.
+           
+           // We need the center in current SVG space to calculate angle correctly.
+           // Since BBox is local, and we have transform, we should really use the transform center.
+           // However, for simplicity, let's assume the bbox center logic holds relative to the drawn overlay.
+           
+           // Correct logic: Calculate angle between Center->StartMouse and Center->CurrentMouse
+           // The handles are drawn transformed. The bbox state is local.
+           // We use the startTransformRef center if available, or current bbox center.
+           
            const cx = bbox.cx; 
            const cy = bbox.cy;
-
-           const startAngle = Math.atan2(startPointRef.current.y - cy, startPointRef.current.x - cx);
-           const currentAngle = Math.atan2(pt.y - cy, pt.x - cx);
            
-           const angleDiff = (currentAngle - startAngle) * (180 / Math.PI);
-           const newRotation = startTransformRef.current.rotation + angleDiff;
-
-           setElementTransform(selectedElementRef.current, {
-               ...startTransformRef.current,
-               rotation: newRotation,
-               cx: cx,
-               cy: cy
-           });
+           // We need to map cx, cy to the visual space where the mouse `pt` is, OR map `pt` to local space.
+           // Let's use local space for angle calculation.
+           const localMouse = getLocalPoint(e.clientX, e.clientY, selectedElementRef.current as SVGGraphicsElement);
+           const localStart = getLocalPoint(e.clientX - (e.clientX - (startPointRef.current?.x || 0)), e.clientY - (e.clientY - (startPointRef.current?.y || 0)), selectedElementRef.current as SVGGraphicsElement); // Approximation or just use startPointRef if mapped?
+           
+           // Actually, `startPointRef` was recorded in SVG Space.
+           // Let's stick to SVG space for rotation, but we need the Center in SVG Space.
+           // Center in SVG Space = Matrix * LocalCenter
+           const el = selectedElementRef.current as SVGGraphicsElement;
+           const ctm = el.getCTM(); // Use CTM relative to SVG
+           if (ctm) {
+               const centerInSVG = DOMPoint.fromPoint({x: cx, y: cy}).matrixTransform(ctm);
+               
+               const startAngle = Math.atan2(pt.y - centerInSVG.y, pt.x - centerInSVG.x);
+               const currentAngle = Math.atan2(startPointRef.current.y - centerInSVG.y, startPointRef.current.x - centerInSVG.x); // Wait, this is dragging delta
+               
+               // Let's simplfy: Just use the delta of angles
+               // But `startPointRef` is static. We need dynamic `pt`.
+               
+               // Re-calculate start angle based on original click
+               const angleNow = Math.atan2(pt.y - centerInSVG.y, pt.x - centerInSVG.x);
+               const anglePrev = Math.atan2(startPointRef.current.y - centerInSVG.y, startPointRef.current.x - centerInSVG.x);
+               
+               // This logic is tricky because startPointRef updates only on mouse down. 
+               // For rotation, standard UX is: measure angle of mouse relative to center.
+               
+               // Let's assume the initial click was "at top".
+               // Easier: Just track rotation delta from previous frame? No, React state update.
+               
+               // Correct approach with current arch:
+               // 1. Calculate angle of Mouse now vs Center.
+               // 2. Calculate angle of Mouse start vs Center.
+               // 3. NewRotation = StartRotation + (AngleNow - AngleStart).
+               
+               const angleDelta = (angleNow - anglePrev) * (180 / Math.PI);
+               
+               setElementTransform(selectedElementRef.current, {
+                   ...startTransformRef.current,
+                   rotation: startTransformRef.current.rotation + angleDelta,
+                   cx: cx,
+                   cy: cy
+               });
+           }
       }
 
       // Mode: Drawing
@@ -668,6 +736,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
           } else {
               // Make Dashed
               svgEl.setAttribute('stroke-dasharray', '4 4');
+              // Ensure style doesn't override it (if style was set to none/empty)
+              svgEl.style.strokeDasharray = '4 4';
           }
           addToHistory();
       }
@@ -676,6 +746,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   const handleChangeStrokeWidth = (width: string) => {
     if (selectedElement) {
         selectedElement.setAttribute('stroke-width', width);
+        // Also update inline style to ensure it takes effect
+        (selectedElement as SVGElement).style.strokeWidth = width + 'px';
         addToHistory();
     }
   };
@@ -893,11 +965,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                 {/* Overlay for Handles */}
                 {tool === 'select' && selectedElement && (
                    <div 
-                     className="absolute top-0 left-0 w-full h-full pointer-events-none"
+                     className="absolute top-0 left-0 w-full h-full pointer-events-none overlay-container"
                      style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}
                    >
                        {/* Wrapper div that matches element transform to position handles correctly */}
-                       <div className="absolute top-0 left-0 w-full h-full pointer-events-none" style={getSelectedElementStyle()}>
+                       <div className="absolute top-0 left-0 w-full h-full pointer-events-none overlay-ui" style={getSelectedElementStyle()}>
                            
                            {/* Bounding Box Outline */}
                            {selectionBBox && (
@@ -913,13 +985,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                                    <div 
                                       className="rotate-handle absolute -top-8 left-1/2 -translate-x-1/2 w-6 h-6 bg-white border border-indigo-400 rounded-full flex items-center justify-center cursor-pointer hover:bg-indigo-50 pointer-events-auto shadow-sm text-indigo-600"
                                       title="Xoay hình"
-                                      onMouseDown={(e) => {
-                                          e.stopPropagation(); // prevent drag select
-                                          dragModeRef.current = 'rotate';
-                                          // Initialize drag state here handled in global mousedown via ref check
-                                      }}
+                                      // Remove inline handler to avoid conflict, handled globally
                                    >
-                                       <RotateCw size={14} />
+                                       <RotateCw size={14} className="pointer-events-none" />
                                    </div>
                                    {/* Connection line to rotate handle */}
                                    <div className="absolute -top-8 left-1/2 -translate-x-px w-px h-8 bg-indigo-400 pointer-events-none"></div>
@@ -930,18 +998,14 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                            {controlPoints.map((p, idx) => (
                                <div
                                  key={idx}
+                                 data-index={idx}
                                  className={`control-handle absolute w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-pointer hover:bg-indigo-50 hover:scale-125 hover:border-indigo-500 transition-transform z-50 pointer-events-auto shadow-sm ${p.type === 'center' ? 'bg-indigo-100' : ''}`}
                                  style={{ 
                                      left: p.x, 
                                      top: p.y, 
                                      transform: 'translate(-50%, -50%)' // Center the dot
                                  }}
-                                 onMouseDown={(e) => {
-                                     e.preventDefault(); 
-                                     e.stopPropagation();
-                                     isDraggingPointRef.current = idx;
-                                     dragModeRef.current = 'vertex';
-                                 }}
+                                 // Remove inline handler, handled globally via data-index
                                />
                            ))}
                        </div>
