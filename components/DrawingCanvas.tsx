@@ -75,6 +75,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
     const tx = parseFloat(el.getAttribute('data-tx') || '0');
     const ty = parseFloat(el.getAttribute('data-ty') || '0');
     const rotation = parseFloat(el.getAttribute('data-rotation') || '0');
+    // If centers are not set, default to 0 (will be updated on selection)
     const cx = parseFloat(el.getAttribute('data-cx') || '0');
     const cy = parseFloat(el.getAttribute('data-cy') || '0');
     return { tx, ty, rotation, cx, cy };
@@ -88,7 +89,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
     el.setAttribute('data-cy', String(data.cy));
 
     // Construct SVG transform string
-    // Order: translate first, then rotate around specific center
     let transformStr = `translate(${data.tx}, ${data.ty})`;
     if (data.rotation !== 0) {
       transformStr += ` rotate(${data.rotation}, ${data.cx}, ${data.cy})`;
@@ -102,8 +102,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       return;
     }
     try {
-      // Use getBBox() which returns coordinates in the element's local system (untouched by transform)
-      // This is exactly what we want for drawing handles relative to the transformed element
       const bbox = el.getBBox();
       setSelectionBBox({
         x: bbox.x,
@@ -221,7 +219,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
     }
   }, [svgContent]);
 
-  // --- Interaction Helpers ---
+  // --- Coordinate Helpers ---
   const getSVGPoint = (clientX: number, clientY: number) => {
     const svg = mountRef.current?.querySelector('svg') as SVGSVGElement;
     if (!svg) return { x: 0, y: 0 };
@@ -236,7 +234,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
     return { x: 0, y: 0 };
   };
 
-  // Get point relative to a specific element's coordinate system (accounting for transforms)
   const getLocalPoint = (clientX: number, clientY: number, el: SVGGraphicsElement) => {
     const svg = mountRef.current?.querySelector('svg') as SVGSVGElement;
     if (!svg) return { x: 0, y: 0 };
@@ -245,14 +242,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
     point.x = clientX;
     point.y = clientY;
     
-    // This is the key fix: use the element's screen CTM
-    // ensuring we get coordinates in the element's local space
-    // regardless of rotation, translation or scaling.
+    // Crucial: Use the element's own CTM to map back to its local coordinate space
     const ctm = el.getScreenCTM(); 
     if (ctm) {
       return point.matrixTransform(ctm.inverse());
     }
-    return getSVGPoint(clientX, clientY); // Fallback
+    return getSVGPoint(clientX, clientY);
   };
 
   const parseControlPoints = (el: Element): ControlPoint[] => {
@@ -326,7 +321,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
         const h = parseFloat(el.getAttribute('height') || '0');
         
         if (pointIndex === 0) { 
-            // Dragging Top-Left
             const newW = (x + w) - newX;
             const newH = (y + h) - newY;
             if (newW > 0 && newH > 0) {
@@ -336,7 +330,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                 el.setAttribute('height', String(newH));
             }
         } else {
-            // Dragging Bottom-Right
             const newW = newX - x;
             const newH = newY - y;
             if (newW > 0 && newH > 0) {
@@ -378,10 +371,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   };
 
   // --- Event Handlers ---
-  const handleMouseDown = useCallback((e: MouseEvent) => {
+
+  // Handle click on canvas background or shapes
+  const handleMouseDownCanvas = useCallback((e: React.MouseEvent) => {
+    // If we clicked a control point, this handler won't fire because of stopPropagation in the point's handler.
+    
     const pt = getSVGPoint(e.clientX, e.clientY);
     const tool = toolRef.current;
-    const target = e.target as Element; // cast to Element for classList/dataset
+    // We access native event target to check what was clicked in SVG
+    const target = e.target as Element; 
 
     // 1. Tool Logic: Drawing New Shapes
     if (tool !== 'select') {
@@ -392,6 +390,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
         didChangeRef.current = false;
         startPointRef.current = pt;
         
+        // Deselect current
         setSelectedElement(null);
         setControlPoints([]);
         setSelectionBBox(null);
@@ -454,67 +453,48 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
         return;
     }
 
-    // 2. Select Logic: Interaction (Move, Rotate, Vertex Edit)
+    // 2. Select Logic
     if (tool === 'select') {
         startPointRef.current = pt;
         didChangeRef.current = false;
         
-        // Case A: Dragging a Vertex Handle (Using delegation via class checking)
-        if (target.classList.contains('control-handle')) {
-            const indexStr = target.getAttribute('data-index');
-            if (indexStr !== null) {
-                dragModeRef.current = 'vertex';
-                isDraggingPointRef.current = parseInt(indexStr, 10);
-                e.stopPropagation();
-                return;
-            }
-        }
-
-        // Case B: Dragging Rotate Handle
-        if (target.classList.contains('rotate-handle')) {
-            dragModeRef.current = 'rotate';
-            if (selectedElementRef.current) {
-                startTransformRef.current = getElementTransform(selectedElementRef.current);
-            }
-            e.stopPropagation();
-            return;
-        }
-
-        // Case C: Clicking on the SVG Element (Move) or Selecting new
-        const svg = mountRef.current?.querySelector('svg');
-        // Handle click on element inside SVG
-        const closestSVGElement = target.closest('svg > *'); // Find direct child of SVG
+        // --- KEY FIX: INDIVIDUAL ELEMENT SELECTION ---
+        // Instead of using closest('svg > *') which grabs groups, we identify if the clicked target
+        // is a valid shape (leaf node) we want to select.
+        const validShapeTags = ['line', 'rect', 'circle', 'path', 'polygon', 'polyline', 'text', 'ellipse'];
+        const tagName = target.tagName.toLowerCase();
         
-        if (svg && svg.contains(target) && closestSVGElement && closestSVGElement !== svg && !target.classList.contains('overlay-ui')) {
-            // Select the element
-            setSelectedElement(closestSVGElement);
-            setControlPoints(parseControlPoints(closestSVGElement));
-            updateSelectionBBox(closestSVGElement);
+        const svg = mountRef.current?.querySelector('svg');
+        
+        if (svg && svg.contains(target) && validShapeTags.includes(tagName)) {
+            // Select the specific element clicked
+            setSelectedElement(target);
+            setControlPoints(parseControlPoints(target));
+            updateSelectionBBox(target);
             
             // Set Move Mode
             dragModeRef.current = 'move';
-            startTransformRef.current = getElementTransform(closestSVGElement);
-        } else if (target === svg || target === mountRef.current || target.classList.contains('overlay-container')) {
-            // Clicked empty space
+            startTransformRef.current = getElementTransform(target);
+        } else {
+            // Clicked empty space or non-shape
             setSelectedElement(null);
             setControlPoints([]);
             setSelectionBBox(null);
             dragModeRef.current = 'none';
         }
     }
-
   }, [addToHistory, updateSelectionBBox]);
 
+  // Global Mouse Move
   const handleMouseMove = useCallback((e: MouseEvent) => {
       // General SVG Point
       const pt = getSVGPoint(e.clientX, e.clientY);
 
       // Mode: Vertex Edit
       if (dragModeRef.current === 'vertex' && isDraggingPointRef.current !== null && selectedElementRef.current) {
-          // KEY FIX: Use getLocalPoint to handle element transforms (move/rotate)
+          // Use getLocalPoint to handle element transforms (move/rotate)
           // This maps the mouse cursor back to the element's original coordinate space
           const localPt = getLocalPoint(e.clientX, e.clientY, selectedElementRef.current as SVGGraphicsElement);
-          
           updateElementShape(selectedElementRef.current, isDraggingPointRef.current, localPt.x, localPt.y);
           setControlPoints(parseControlPoints(selectedElementRef.current));
           updateSelectionBBox(selectedElementRef.current);
@@ -539,60 +519,26 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       }
 
       // Mode: Rotate
-      if (dragModeRef.current === 'rotate' && selectedElementRef.current && startPointRef.current) {
+      if (dragModeRef.current === 'rotate' && selectedElementRef.current && startPointRef.current && selectionBBox) {
            didChangeRef.current = true;
-           const bbox = selectionBBox;
-           if (!bbox) return;
-
-           // Center of rotation (bbox center) is in local coordinates, we need to map mouse to the same space approximately? 
-           // Or just use screen vector math. Using SVG coords is simpler for relative angles.
+           const cx = selectionBBox.cx;
+           const cy = selectionBBox.cy;
            
-           // We need the center in current SVG space to calculate angle correctly.
-           // Since BBox is local, and we have transform, we should really use the transform center.
-           // However, for simplicity, let's assume the bbox center logic holds relative to the drawn overlay.
-           
-           // Correct logic: Calculate angle between Center->StartMouse and Center->CurrentMouse
-           // The handles are drawn transformed. The bbox state is local.
-           // We use the startTransformRef center if available, or current bbox center.
-           
-           const cx = bbox.cx; 
-           const cy = bbox.cy;
-           
-           // We need to map cx, cy to the visual space where the mouse `pt` is, OR map `pt` to local space.
-           // Let's use local space for angle calculation.
-           const localMouse = getLocalPoint(e.clientX, e.clientY, selectedElementRef.current as SVGGraphicsElement);
-           const localStart = getLocalPoint(e.clientX - (e.clientX - (startPointRef.current?.x || 0)), e.clientY - (e.clientY - (startPointRef.current?.y || 0)), selectedElementRef.current as SVGGraphicsElement); // Approximation or just use startPointRef if mapped?
-           
-           // Actually, `startPointRef` was recorded in SVG Space.
-           // Let's stick to SVG space for rotation, but we need the Center in SVG Space.
-           // Center in SVG Space = Matrix * LocalCenter
+           // Calculate Center in SVG Space using CTM
            const el = selectedElementRef.current as SVGGraphicsElement;
-           const ctm = el.getCTM(); // Use CTM relative to SVG
+           const ctm = el.getCTM();
            if (ctm) {
                const centerInSVG = DOMPoint.fromPoint({x: cx, y: cy}).matrixTransform(ctm);
                
-               const startAngle = Math.atan2(pt.y - centerInSVG.y, pt.x - centerInSVG.x);
-               const currentAngle = Math.atan2(startPointRef.current.y - centerInSVG.y, startPointRef.current.x - centerInSVG.x); // Wait, this is dragging delta
-               
-               // Let's simplfy: Just use the delta of angles
-               // But `startPointRef` is static. We need dynamic `pt`.
-               
-               // Re-calculate start angle based on original click
                const angleNow = Math.atan2(pt.y - centerInSVG.y, pt.x - centerInSVG.x);
-               const anglePrev = Math.atan2(startPointRef.current.y - centerInSVG.y, startPointRef.current.x - centerInSVG.x);
+               // We approximate start angle based on drag start to prevent jumping
+               // Ideally we should track the 'angleOffset' on MouseDown, but this is simpler
                
-               // This logic is tricky because startPointRef updates only on mouse down. 
-               // For rotation, standard UX is: measure angle of mouse relative to center.
+               // Alternative: Simple delta from previous MouseMove? No, react state.
                
-               // Let's assume the initial click was "at top".
-               // Easier: Just track rotation delta from previous frame? No, React state update.
-               
-               // Correct approach with current arch:
-               // 1. Calculate angle of Mouse now vs Center.
-               // 2. Calculate angle of Mouse start vs Center.
-               // 3. NewRotation = StartRotation + (AngleNow - AngleStart).
-               
-               const angleDelta = (angleNow - anglePrev) * (180 / Math.PI);
+               // Let's use the startPointRef to get initial angle relative to center
+               const angleStart = Math.atan2(startPointRef.current.y - centerInSVG.y, startPointRef.current.x - centerInSVG.x);
+               const angleDelta = (angleNow - angleStart) * (180 / Math.PI);
                
                setElementTransform(selectedElementRef.current, {
                    ...startTransformRef.current,
@@ -628,21 +574,18 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   }, [selectionBBox]);
 
   const handleMouseUp = useCallback((e: MouseEvent) => {
-      // End Dragging
       if (dragModeRef.current !== 'none') {
           dragModeRef.current = 'none';
           isDraggingPointRef.current = null;
           if (didChangeRef.current) {
               addToHistory();
               didChangeRef.current = false;
-              // Update BBox after move/rotate finishes
               if (selectedElementRef.current) {
                   updateSelectionBBox(selectedElementRef.current);
               }
           }
       }
 
-      // End Drawing
       if (isDrawingRef.current) {
           isDrawingRef.current = false;
           if (currentDrawElementRef.current) {
@@ -669,16 +612,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       }
   }, [addToHistory, updateSelectionBBox]);
 
-  const handleClick = useCallback((e: MouseEvent) => {
-    // Handled in MouseDown mostly to support drag-select
-  }, []);
-
-  const handleDoubleClick = useCallback((e: MouseEvent) => {
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
       if (toolRef.current !== 'select') return;
-      
       const target = e.target as Element;
-      // Allow editing text on double click
+      
       if (target.tagName.toLowerCase() === 'text') {
+          e.stopPropagation(); // Stop propagation
           const currentText = target.textContent;
           const newText = prompt("Chỉnh sửa văn bản:", currentText || "");
           if (newText !== null && newText !== currentText) {
@@ -692,22 +631,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       }
   }, [addToHistory, updateSelectionBBox]);
 
+  // Bind Window listeners for move/up
   useEffect(() => {
-    const container = mountRef.current;
-    if (!container) return;
-    container.addEventListener('mousedown', handleMouseDown);
-    container.addEventListener('click', handleClick);
-    container.addEventListener('dblclick', handleDoubleClick); 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
     return () => {
-        container.removeEventListener('mousedown', handleMouseDown);
-        container.removeEventListener('click', handleClick);
-        container.removeEventListener('dblclick', handleDoubleClick);
         window.removeEventListener('mousemove', handleMouseMove);
         window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [handleMouseDown, handleMouseMove, handleMouseUp, handleClick, handleDoubleClick]);
+  }, [handleMouseMove, handleMouseUp]);
 
   const handleDelete = () => {
       if (selectedElement && selectedElement.parentNode) {
@@ -725,18 +657,17 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
           const attrDash = svgEl.getAttribute('stroke-dasharray');
           const styleDash = svgEl.style.strokeDasharray;
 
-          // Check if either attribute or style indicates a dashed line
+          // Detect if it is currently dashed (any value other than 'none' or empty)
           const isDashed = (attrDash && attrDash !== 'none') || (styleDash && styleDash !== 'none');
 
           if (isDashed) {
-              // Make Solid: Remove attribute AND clear style property
-              svgEl.removeAttribute('stroke-dasharray');
-              svgEl.style.strokeDasharray = '';
-              svgEl.style.removeProperty('stroke-dasharray');
+              // --- FORCE SOLID ---
+              // IMPORTANT: Setting to 'none' explicitly overrides any inheritance from parent groups (<g>)
+              svgEl.setAttribute('stroke-dasharray', 'none');
+              svgEl.style.strokeDasharray = 'none';
           } else {
-              // Make Dashed
+              // --- FORCE DASHED ---
               svgEl.setAttribute('stroke-dasharray', '4 4');
-              // Ensure style doesn't override it (if style was set to none/empty)
               svgEl.style.strokeDasharray = '4 4';
           }
           addToHistory();
@@ -746,7 +677,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
   const handleChangeStrokeWidth = (width: string) => {
     if (selectedElement) {
         selectedElement.setAttribute('stroke-width', width);
-        // Also update inline style to ensure it takes effect
         (selectedElement as SVGElement).style.strokeWidth = width + 'px';
         addToHistory();
     }
@@ -784,6 +714,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       };
   };
 
+  // ... (Loading, Error, Empty states remain same) ...
   if (isLoading) {
     return (
       <div className="h-full w-full flex flex-col items-center justify-center bg-slate-50 dark:bg-slate-900 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 min-h-[500px] transition-colors">
@@ -829,34 +760,24 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       {/* Top Toolbar */}
       <div className="flex items-center justify-between p-3 border-b border-slate-100 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm z-20">
         <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700">
-          <button onClick={handleZoomOut} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all" title="Thu nhỏ">
+          <button onClick={handleZoomOut} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all">
             <ZoomOut size={18} />
           </button>
           <span className="text-xs font-mono w-10 text-center text-slate-500 dark:text-slate-400 font-medium">{Math.round(scale * 100)}%</span>
-          <button onClick={handleZoomIn} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all" title="Phóng to">
+          <button onClick={handleZoomIn} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all">
             <ZoomIn size={18} />
           </button>
           <div className="w-px h-4 bg-slate-300 dark:bg-slate-600 mx-1"></div>
-          <button onClick={handleResetZoom} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all" title="Đặt lại">
+          <button onClick={handleResetZoom} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all">
             <Move size={18} />
           </button>
         </div>
 
         <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1 border border-slate-200 dark:border-slate-700">
-            <button 
-                onClick={handleUndo} 
-                disabled={historyIndex <= 0}
-                className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-all" 
-                title="Hoàn tác"
-            >
+            <button onClick={handleUndo} disabled={historyIndex <= 0} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-all">
                 <Undo size={18} />
             </button>
-            <button 
-                onClick={handleRedo} 
-                disabled={historyIndex >= history.length - 1}
-                className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-all" 
-                title="Làm lại"
-            >
+            <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-all">
                 <Redo size={18} />
             </button>
         </div>
@@ -864,55 +785,24 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
         <div className="flex items-center gap-2">
             {selectedElement && (
                 <>
-                <button
-                    onClick={handleToggleDash}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors border border-slate-200 dark:border-slate-700"
-                    title="Đổi nét liền/đứt"
-                >
+                <button onClick={handleToggleDash} className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors border border-slate-200 dark:border-slate-700">
                    <MoreHorizontal size={16} />
                 </button>
-                
                 <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-1"></div>
-                
                 <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 border border-slate-200 dark:border-slate-700">
-                   <button 
-                     onClick={() => handleChangeStrokeWidth('1')} 
-                     className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all"
-                     title="Nét mỏng"
-                   >
-                     <Minus size={16} strokeWidth={1} />
-                   </button>
-                   <button 
-                     onClick={() => handleChangeStrokeWidth('2')} 
-                     className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all"
-                     title="Nét vừa"
-                   >
-                     <Minus size={16} strokeWidth={2} />
-                   </button>
-                   <button 
-                     onClick={() => handleChangeStrokeWidth('4')} 
-                     className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all"
-                     title="Nét dày"
-                   >
-                     <Minus size={16} strokeWidth={4} />
-                   </button>
+                   {['1', '2', '4'].map(w => (
+                     <button key={w} onClick={() => handleChangeStrokeWidth(w)} className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-700 rounded transition-all">
+                        <Minus size={16} strokeWidth={parseInt(w)} />
+                     </button>
+                   ))}
                 </div>
-
                 <div className="h-6 w-px bg-slate-300 dark:bg-slate-700 mx-1"></div>
-
-                <button 
-                  onClick={handleDelete}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm font-medium rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors border border-red-100 dark:border-red-900/50"
-                  title="Xóa đối tượng"
-                >
+                <button onClick={handleDelete} className="flex items-center gap-1 px-3 py-1.5 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm font-medium rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors border border-red-100 dark:border-red-900/50">
                   <Trash2 size={16} />
                 </button>
                 </>
             )}
-            <button 
-              onClick={handleDownload}
-              className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg shadow-md shadow-indigo-500/20 transition-all active:scale-95"
-            >
+            <button onClick={handleDownload} className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg shadow-md shadow-indigo-500/20 transition-all active:scale-95">
               <Download size={16} />
               <span className="hidden sm:inline">SVG</span>
             </button>
@@ -922,21 +812,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
       <div className="flex flex-1 overflow-hidden relative">
           {/* Left Toolbar */}
           <div className="w-14 border-r border-slate-100 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50 backdrop-blur flex flex-col items-center py-4 gap-3 z-10">
-             <button 
-                onClick={() => setTool('select')}
-                className={`p-2.5 rounded-xl transition-all shadow-sm ${tool === 'select' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 ring-2 ring-indigo-500/20' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
-                title="Chọn & Di chuyển"
-             >
+             <button onClick={() => setTool('select')} className={`p-2.5 rounded-xl transition-all shadow-sm ${tool === 'select' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 ring-2 ring-indigo-500/20' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
                  <MousePointer2 size={20} />
              </button>
              <div className="w-8 h-px bg-slate-200 dark:bg-slate-700 my-1"></div>
              {['line', 'rect', 'circle', 'text'].map((t) => (
-               <button 
-                  key={t}
-                  onClick={() => setTool(t as ToolType)}
-                  className={`p-2.5 rounded-xl transition-all shadow-sm ${tool === t ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 ring-2 ring-indigo-500/20' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
-                  title={t}
-               >
+               <button key={t} onClick={() => setTool(t as ToolType)} className={`p-2.5 rounded-xl transition-all shadow-sm ${tool === t ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 ring-2 ring-indigo-500/20' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
                  {t === 'line' && <Minus size={20} className="-rotate-45" />}
                  {t === 'rect' && <Square size={20} />}
                  {t === 'circle' && <Circle size={20} />}
@@ -953,6 +834,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                 backgroundSize: '20px 20px',
                 cursor: tool === 'select' && selectedElement ? 'move' : 'default'
             }}
+            // Bind mouseDown to the CONTAINER to handle clicks on canvas/shapes
+            onMouseDown={handleMouseDownCanvas}
+            onDoubleClick={handleDoubleClick}
           >
             {/* The Paper */}
             <div className="relative shadow-2xl shadow-slate-400/20 dark:shadow-black/50">
@@ -962,7 +846,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                   style={{ transform: `scale(${scale})`, minWidth: '500px', minHeight: '500px' }}
                 />
                 
-                {/* Overlay for Handles */}
+                {/* Overlay for Handles - Rendered by React on top of the SVG content */}
                 {tool === 'select' && selectedElement && (
                    <div 
                      className="absolute top-0 left-0 w-full h-full pointer-events-none overlay-container"
@@ -984,12 +868,19 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                                    {/* Rotate Handle */}
                                    <div 
                                       className="rotate-handle absolute -top-8 left-1/2 -translate-x-1/2 w-6 h-6 bg-white border border-indigo-400 rounded-full flex items-center justify-center cursor-pointer hover:bg-indigo-50 pointer-events-auto shadow-sm text-indigo-600"
-                                      title="Xoay hình"
-                                      // Remove inline handler to avoid conflict, handled globally
+                                      // DIRECT EVENT BINDING: Stop propagation so canvas doesn't deselect
+                                      onMouseDown={(e) => {
+                                          e.stopPropagation();
+                                          if (selectedElementRef.current) {
+                                              dragModeRef.current = 'rotate';
+                                              startTransformRef.current = getElementTransform(selectedElementRef.current);
+                                              // We also need startPoint for angle calc
+                                              startPointRef.current = getSVGPoint(e.clientX, e.clientY);
+                                          }
+                                      }}
                                    >
                                        <RotateCw size={14} className="pointer-events-none" />
                                    </div>
-                                   {/* Connection line to rotate handle */}
                                    <div className="absolute -top-8 left-1/2 -translate-x-px w-px h-8 bg-indigo-400 pointer-events-none"></div>
                                </div>
                            )}
@@ -998,14 +889,18 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ svgContent, isLoad
                            {controlPoints.map((p, idx) => (
                                <div
                                  key={idx}
-                                 data-index={idx}
                                  className={`control-handle absolute w-3 h-3 bg-white border-2 border-indigo-600 rounded-full cursor-pointer hover:bg-indigo-50 hover:scale-125 hover:border-indigo-500 transition-transform z-50 pointer-events-auto shadow-sm ${p.type === 'center' ? 'bg-indigo-100' : ''}`}
                                  style={{ 
                                      left: p.x, 
                                      top: p.y, 
-                                     transform: 'translate(-50%, -50%)' // Center the dot
+                                     transform: 'translate(-50%, -50%)' 
                                  }}
-                                 // Remove inline handler, handled globally via data-index
+                                 // DIRECT EVENT BINDING: Stop propagation so canvas doesn't deselect
+                                 onMouseDown={(e) => {
+                                     e.stopPropagation();
+                                     dragModeRef.current = 'vertex';
+                                     isDraggingPointRef.current = idx;
+                                 }}
                                />
                            ))}
                        </div>
